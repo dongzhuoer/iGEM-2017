@@ -1,0 +1,111 @@
+---
+title: "NKU_China InterLab 2017"
+author: "`r person('Zhuoer', 'Dong', email = 'dongzhuoer@mail.nankai.edu.cn')`"
+date: "2018/09/29"
+output: 
+    html_document: default
+---
+
+rendered on `r Sys.Date()`
+
+```{r, include=FALSE}
+library(stringr)
+library(ggplot2)
+```
+
+# data
+
+```{r, include=FALSE}
+# read raw data
+
+OD           <- readr::read_csv('OD-adjusted.csv', col_types = 'ccnnnn');
+fluorescence <- readr::read_csv('fluorescence-adjusted.csv', col_types = 'ccnnnn') ;
+standard     <- read.csv('standard.csv', row.names = 1);
+
+# transform
+
+## wide to long
+OD %<>% reshape2::melt(1:2, 3:6, 'replicate') %>% {names(.)[4] = 'OD'; .};
+fluorescence %<>% reshape2::melt(1:2, 3:6, 'replicate') %>% {names(.)[4] = 'fluorescence'; .};
+
+## Fluorescence / OD
+total <- cbind(OD[ , 1:4], fluorescence = fluorescence[, 4]) %>% dplyr::as_tibble();
+
+## change and add columns
+total %<>%  dplyr::mutate(
+    colony = str_extract(Colony, '(?<=Colony )\\d'),
+    promoter = str_extract(Colony, 'J\\d+'),
+    RBS = str_extract(Colony, 'BCD2|I13504'),
+    device = str_replace(Colony, '[ :][( ][\\w\\W]+$', ''),
+    replicate = str_extract(replicate, '\\d'),
+    value = fluorescence/OD
+)
+```
+
+
+
+```{r, echo=FALSE, rows.print=10, cols.min.print=9, pages.print=10}
+total %>% dplyr::select(device, promoter:RBS, colony, replicate, Time, OD:fluorescence, value) %>% rmarkdown::paged_table() 
+```
+
+# ANOVA (方差分析)
+
+```{r, echo=FALSE, comment=NULL}
+total %>% dplyr::filter(str_detect(Colony, 'Test')) %>% lm(value ~ promoter + RBS + Time + colony + replicate + promoter * RBS, .) %>% anova;
+```
+
+# plot
+
+```{r, echo=FALSE, out.width='1000px', out.height='750px', dpi=144}
+total %>% dplyr::group_by_at(c('device', 'colony', 'Time')) %>%
+    dplyr::mutate(se = sd(value) / sqrt(n()), value = mean(value)) %>%
+    ggplot(aes(device, value, fill = Time)) + 
+        geom_col(position = "dodge") + 
+        geom_errorbar(aes(ymin = value - se, ymax = value + se), 
+                      width = 0.3, position = position_dodge(0.9)) + 
+        facet_wrap(~paste0('Colony ', colony), ncol = 1) + 
+        ylab(bquote('Fluorescence' / OD[600])) +
+        theme(axis.text.x = element_text(size = 6.5))
+    
+
+total %>% dplyr::filter(str_detect(Colony, 'Test')) %>% 
+    dplyr::group_by_at(c('promoter', 'RBS', 'Time')) %>%
+    dplyr::mutate(se = sd(value) / sqrt(n()), value = mean(value)) %>%
+    ggplot(aes(Time, value, fill = '#f94040')) + 
+        geom_col(position = "dodge", width = 0.8) + 
+        geom_errorbar(aes(ymin = value - se, ymax = value + se), 
+                      width = 0.3, position = position_dodge(0.9)) + 
+        facet_grid(RBS~promoter) + 
+        ylab(bquote('Fluorescence' / OD[600])) +
+        theme(legend.position = 'none')
+```
+
+
+# more AVONA on 2017
+
+```{r}
+# add `T` for second `%>%`, 'BCD2'
+total %>% dplyr::filter(str_detect(Colony, 'Test'), Time == '6h', RBS == 'I13504') %>% 
+    dplyr::mutate(value = value / standard[promoter, 1]) %>% 
+    lm(value ~ promoter + colony + replicate, .) %>% anova;
+```
+
+
+
+
+```{r}
+## remove Negative/Positive control
+result <- total %>%  
+    dplyr::mutate(device = str_extract(Colony, '(?<=^Test Device )\\d')) %>%
+    {.[str_detect(.$Colony, 'Test'), ]} %>%  
+    dplyr::mutate(normalized =  value / standard[promoter, 1])
+
+lm(value ~ promoter + RBS + Time + colony + replicate + promoter * RBS, result) %>% anova
+
+plyr::l_ply(result$Time %>% unique, function(t) {
+    print(t);
+    result %>% dplyr::filter(Time == t) %>% plyr::dlply('RBS') %>% plyr::l_ply(. %>% {lm(normalized ~ promoter, .)} %>% anova %>% print)
+    cat('\n\n\n\n');
+})
+
+```

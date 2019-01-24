@@ -1,0 +1,99 @@
+---
+title: "NKU_China InterLab 2016"
+author: "`r person('Zhuoer', 'Dong', email = 'dongzhuoer@mail.nankai.edu.cn')`"
+date: "2018/09/29"
+output: 
+    html_document: default
+---
+
+
+rendered on `r Sys.Date()`
+
+
+```{r, include=FALSE}
+library(stringr)
+library(ggplot2)
+```
+
+# read raw data
+
+```{r}
+c11 <- rep('c', 11) %>% paste(collapse = '');
+
+Abs               <- readr::read_csv('2016-Abs.csv', F, c11);
+fluorescence_2016 <- readr::read_csv('2016-fluorescence.csv', F, c11);
+
+standard_2016     <- read.csv('standard.csv', row.names = 1)
+```
+
+# transform
+
+tidy `Abs` and `fluorescence`
+
+```{r}
+tidy <- function(df) {
+    plyr::ldply(1:5, 
+                . %>% {cbind(df[rep(1,6), 2*.], df[3:8, c(1, 2*.+0, 2*.+1)]) %>% set_names(c('d', 't', '1', '2'))}
+    ) %>%  reshape2::melt(1:2, 3:4) %>% set_names(c( 'device','time', 'replicate', 'value')) 
+}
+
+Abs %<>% tidy
+fluorescence_2016 %<>% tidy
+```
+
+combine into result
+
+```{r}
+total_2016 <- fluorescence_2016 %>% dplyr::select(4) %>% cbind(Abs, .) %T>% 
+    {names(.)[4:5] = c('Abs', 'fluorescence')} %>% tibble::as.tibble() %T>% print
+```
+
+change and add columns
+
+```{r}
+promotor <- c('device 1' = 'J23101', 'device 2' = 'J23106', 'device 3' = 'J23117')
+
+total_2016 %<>% dplyr::mutate(
+    device = ifelse(str_detect(device, '\\d'), promotor[device], device),
+    Abs = Abs %>% as.character %>% as.numeric,
+    fluorescence = fluorescence %>% as.character %>% as.numeric,
+    value = fluorescence/Abs
+)
+```
+
+```{r echo=FALSE}
+total_2016 %>% rmarkdown::paged_table()
+```
+
+# ANOVA
+
+```{r}
+## subset test device and normarlize
+positive_control <- total_2016 %>% dplyr::filter(device == 'positive control') %>% reshape2::acast('time', mean);
+
+total_2016 %>% dplyr::filter(str_detect(device, '\\d')) %>% 
+    dplyr::mutate(norm.by.time = value / positive_control[time],
+                  norm.by.promoter = value / standard_2016[device, 1],
+                  norm.by.both = value / positive_control[time] / standard_2016[device, 1]
+    ) %T>% 
+    {print(anova(lm(value ~ device + time + replicate, .)))} %T>% 
+    {print(anova(lm(norm.by.time ~ device + time + replicate, .)))} %T>% 
+    {print(anova(lm(norm.by.promoter ~ device + time + replicate, .)))} %T>% 
+    {print(anova(lm(norm.by.both ~ device + time + replicate, .)))}
+
+#" even you only analyse device 2 and 3 (`device == 'J23106' | device == 'J23117'`), there is also significant difference
+```
+
+# plot
+
+```{r}
+#" you can manipulate `T` in the first line to get various result
+total_2016 %>% dplyr::filter(str_detect(device, '\\d')) %T>% 
+    dplyr::mutate(value = value / standard_2016[device, 1]) %>% 
+    dplyr::group_by_at(c('device', 'time')) %>%
+    dplyr::mutate(se = sd(value) / sqrt(n()), value = mean(value)) %>%
+    ggplot(aes(device, value, fill = time)) + 
+        geom_col(position = "dodge") + 
+        geom_errorbar(aes(ymin = value - se, ymax = value + se), 
+                      width = 0.3, position = position_dodge(0.9))
+```
